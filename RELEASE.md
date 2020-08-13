@@ -16,6 +16,8 @@
     package without explicit Tensorflow dependency.
 
 ## Bug fixes and other changes
+*   Added a new template, 'iris' which is simple subset of existing iris
+    examples.
 
 ### For pipeline authors
 
