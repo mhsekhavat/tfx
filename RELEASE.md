@@ -46,6 +46,8 @@
 *   Depends on `tensorflow-model-analysis>=0.24.2,<0.25`.
 *   Depends on `tensorflow-transform>=0.24,<0.25`.
 *   Depends on `tfx-bsl>=0.24,<0.25`.
+*   New extra dependencies `[examples]` is required to use codes inside
+    tfx/examples.
 
 ## Breaking changes
 
