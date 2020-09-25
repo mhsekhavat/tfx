@@ -40,6 +40,7 @@
 *   Used 'python -m ' style for container entrypoints.
 *   Stopped depending on `google-resumable-media`.
 *   Stopped depending on `Werkzeug`.
+*   Stopped depending on `WTForms`.
 *   Depends on `absl-py>=0.9,<0.11`.
 *   Depends on `apache-beam[gcp]>=2.24,<3`.
 *   Depends on `ml-metadata>=0.24,<0.25`.
