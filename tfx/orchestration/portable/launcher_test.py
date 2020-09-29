@@ -174,6 +174,7 @@ class LauncherTest(test_utils.TfxTest):
     self._example_gen = pipeline.nodes[0].pipeline_node
     self._transform = pipeline.nodes[1].pipeline_node
     self._trainer = pipeline.nodes[2].pipeline_node
+    self._importer = pipeline.nodes[3].pipeline_node
 
     # Fakes an ExecutorSpec for Trainer
     self._trainer_executor_spec = _PYTHON_CLASS_EXECUTABLE_SPEC()
@@ -581,6 +582,200 @@ class LauncherTest(test_utils.TfxTest):
           artifact,
           ignored_fields=[
               'uri', 'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+
+  def testLauncher_importer_mode_reimport_enabled(self):
+    test_launcher = launcher.Launcher(
+        pipeline_node=self._importer,
+        mlmd_connection=self._mlmd_connection,
+        pipeline_info=self._pipeline_info,
+        pipeline_runtime_spec=self._pipeline_runtime_spec,
+        executor_spec=self._trainer_executor_spec,
+        custom_executor_operators=self._test_executor_operators)
+    execution_metadata = test_launcher.launch()
+
+    with self._mlmd_connection as m:
+      [artifact] = m.store.get_artifacts_by_type('Schema')
+      self.assertProtoPartiallyEquals(
+          """
+          id: 1
+          type_id: 4
+          uri: "my_url"
+          custom_properties {
+            key: "int_custom_property"
+            value {
+              int_value: 123
+            }
+          }
+          custom_properties {
+            key: "str_custom_property"
+            value {
+              string_value: "abc"
+            }
+          }
+          state: LIVE""",
+          artifact,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+      [execution] = m.store.get_executions_by_id([execution_metadata.id])
+      self.assertProtoPartiallyEquals(
+          """
+          id: 1
+          type_id: 3
+          last_known_state: COMPLETE
+          custom_properties {
+            key: "artifact_uri"
+            value {
+              string_value: "my_url"
+            }
+          }
+          custom_properties {
+            key: "reimport"
+            value {
+              int_value: 1
+            }
+          }
+          """,
+          execution,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+
+    execution_metadata = test_launcher.launch()
+    with self._mlmd_connection as m:
+      new_artifact = m.store.get_artifacts_by_type('Schema')[1]
+      self.assertProtoPartiallyEquals(
+          """
+          id: 2
+          type_id: 4
+          uri: "my_url"
+          custom_properties {
+            key: "int_custom_property"
+            value {
+              int_value: 123
+            }
+          }
+          custom_properties {
+            key: "str_custom_property"
+            value {
+              string_value: "abc"
+            }
+          }
+          state: LIVE""",
+          new_artifact,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+      [execution] = m.store.get_executions_by_id([execution_metadata.id])
+      self.assertProtoPartiallyEquals(
+          """
+          id: 2
+          type_id: 3
+          last_known_state: COMPLETE
+          custom_properties {
+            key: "artifact_uri"
+            value {
+              string_value: "my_url"
+            }
+          }
+          custom_properties {
+            key: "reimport"
+            value {
+              int_value: 1
+            }
+          }
+          """,
+          execution,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+
+  def testLauncher_importer_mode_reimport_disabled(self):
+    self._importer.parameters.parameters['reimport'].field_value.int_value = 0
+    test_launcher = launcher.Launcher(
+        pipeline_node=self._importer,
+        mlmd_connection=self._mlmd_connection,
+        pipeline_info=self._pipeline_info,
+        pipeline_runtime_spec=self._pipeline_runtime_spec,
+        executor_spec=self._trainer_executor_spec,
+        custom_executor_operators=self._test_executor_operators)
+    execution_metadata = test_launcher.launch()
+
+    with self._mlmd_connection as m:
+      [artifact] = m.store.get_artifacts_by_type('Schema')
+      self.assertProtoPartiallyEquals(
+          """
+          id: 1
+          type_id: 4
+          uri: "my_url"
+          custom_properties {
+            key: "int_custom_property"
+            value {
+              int_value: 123
+            }
+          }
+          custom_properties {
+            key: "str_custom_property"
+            value {
+              string_value: "abc"
+            }
+          }
+          state: LIVE""",
+          artifact,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+      [execution] = m.store.get_executions_by_id([execution_metadata.id])
+      self.assertProtoPartiallyEquals(
+          """
+          id: 1
+          type_id: 3
+          last_known_state: COMPLETE
+          custom_properties {
+            key: "artifact_uri"
+            value {
+              string_value: "my_url"
+            }
+          }
+          custom_properties {
+            key: "reimport"
+            value {
+              int_value: 0
+            }
+          }
+          """,
+          execution,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
+          ])
+
+    execution_metadata = test_launcher.launch()
+    with self._mlmd_connection as m:
+      # No new Schema is produced.
+      self.assertLen(m.store.get_artifacts_by_type('Schema'), 1)
+      [execution] = m.store.get_executions_by_id([execution_metadata.id])
+      self.assertProtoPartiallyEquals(
+          """
+          id: 2
+          type_id: 3
+          last_known_state: COMPLETE
+          custom_properties {
+            key: "artifact_uri"
+            value {
+              string_value: "my_url"
+            }
+          }
+          custom_properties {
+            key: "reimport"
+            value {
+              int_value: 0
+            }
+          }
+          """,
+          execution,
+          ignored_fields=[
+              'create_time_since_epoch', 'last_update_time_since_epoch'
           ])
 
 

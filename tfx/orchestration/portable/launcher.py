@@ -20,6 +20,7 @@ from absl import logging
 import attr
 import tensorflow as tf
 from tfx import types
+from tfx.components.common_nodes import importer_node
 from tfx.orchestration import metadata
 from tfx.orchestration.portable import base_driver_operator
 from tfx.orchestration.portable import base_executor_operator
@@ -146,6 +147,52 @@ class Launcher(object):
           custom_driver_spec, self._mlmd_connection, self._pipeline_info,
           self._pipeline_node)
 
+  def _is_importer_node(self) -> bool:
+    return (self._pipeline_node.node_info.type.name ==
+            'tfx.components.common_nodes.importer_node.ImporterNode')
+
+  def _extract_proto_map(
+      self,
+      # The actual type of proto_map is MessageMap[str, pipeline_pb2.Value],
+      # a Google internal type.
+      proto_map: Any) -> Dict[str, Any]:
+    extract_mlmd_value = lambda v: getattr(v, v.WhichOneof('value'))
+    return {k: extract_mlmd_value(v.field_value) for k, v in proto_map.items()}
+
+  def _run_importer(
+      self, execution: metadata_store_pb2.Execution,
+      exec_properties: Dict[Text, Any],
+      contexts: List[metadata_store_pb2.Context]) -> _PrepareExecutionResult:
+    """Run Importer specific logic."""
+    # Add importer node specific properties, custom_properties to
+    # exec_properties which be persisted to Artifact table in MLMD.
+    output_spec = self._pipeline_node.outputs.outputs[
+        importer_node.IMPORT_RESULT_KEY]
+    exec_properties[importer_node.PROPERTIES_KEY] = self._extract_proto_map(
+        output_spec.artifact_spec.additional_properties)
+    exec_properties[
+        importer_node.CUSTOM_PROPERTIES_KEY] = self._extract_proto_map(
+            output_spec.artifact_spec.additional_custom_properties)
+
+    importer_driver = importer_node.ImporterDriver(self._mlmd_connection)
+
+    output_artifact_class = types.Artifact(output_spec.artifact_spec.type).type
+    output_artifacts = importer_driver.generate_output_artifacts(
+        exec_properties, output_artifact_class, output_spec.artifact_spec.type)
+
+    execution_publish_utils.publish_succeeded_execution(
+        metadata_handler=self._mlmd_connection,
+        execution_id=execution.id,
+        contexts=contexts,
+        output_artifacts=output_artifacts)
+
+    # Importer doesn't have executor, so no execution is needed.
+    return _PrepareExecutionResult(
+        execution_info=base_executor_operator.ExecutionInfo(
+            execution_metadata=execution),
+        contexts=contexts,
+        is_execution_needed=False)
+
   def _prepare_execution(self) -> _PrepareExecutionResult:
     """Prepares inputs, outputs and execution properties for actual execution."""
     # TODO(b/150979622): handle the edge case that the component get evicted
@@ -178,6 +225,9 @@ class Launcher(object):
           contexts=contexts,
           input_artifacts=input_artifacts,
           exec_properties=exec_properties)
+      if self._is_importer_node():
+        # Run importer speicific logic and short cut to return early.
+        return self._run_importer(execution, exec_properties, contexts)
 
       # 5. Resolve output
       output_artifacts = self._output_resolver.generate_output_artifacts(

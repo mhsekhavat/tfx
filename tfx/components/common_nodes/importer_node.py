@@ -17,10 +17,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Any, Dict, Optional, Text, Type, Union
+from typing import Any, Dict, List, Optional, Text, Type, Union
 
 import absl
-
 from tfx import types
 from tfx.dsl.components.base import base_driver
 from tfx.dsl.components.base import base_node
@@ -28,6 +27,8 @@ from tfx.orchestration import data_types
 from tfx.orchestration import metadata
 from tfx.types import channel_utils
 from tfx.types import node_common
+
+from ml_metadata.proto import metadata_store_pb2
 
 # Constant to access importer importing result from importer output dict.
 IMPORT_RESULT_KEY = 'result'
@@ -44,9 +45,13 @@ REIMPORT_OPTION_KEY = 'reimport'
 class ImporterDriver(base_driver.BaseDriver):
   """Driver for Importer."""
 
-  def _prepare_artifact(self, uri: Text, properties: Dict[Text, Any],
-                        custom_properties: Dict[Text, Any], reimport: bool,
-                        destination_channel: types.Channel) -> types.Artifact:
+  def _prepare_artifact(
+      self, uri: Text,
+      properties: Dict[Text, Any],
+      custom_properties: Dict[Text, Any],
+      reimport: bool, output_artifact_class: Type[types.Artifact],
+      mlmd_artifact_type: Optional[metadata_store_pb2.ArtifactType]
+  ) -> types.Artifact:
     """Prepares the Importer's output artifact.
 
     If there is already an artifact in MLMD with the same URI and properties /
@@ -62,7 +67,8 @@ class ImporterDriver(base_driver.BaseDriver):
         dictionary from string keys to integer / string values.
       reimport: If set to True, will register a new artifact even if it already
         exists in the database.
-      destination_channel: Destination channel for the imported artifact.
+      output_artifact_class: The class of the output artifact.
+      mlmd_artifact_type: The MLMD artifact type of the Artifact to be created.
 
     Returns:
       An Artifact object representing the imported artifact.
@@ -85,7 +91,7 @@ class ImporterDriver(base_driver.BaseDriver):
     previous_artifacts = []
     for candidate_mlmd_artifact in unfiltered_previous_artifacts:
       is_candidate = True
-      candidate_artifact = destination_channel.type()
+      candidate_artifact = output_artifact_class(mlmd_artifact_type)
       candidate_artifact.set_mlmd_artifact(candidate_mlmd_artifact)
       for key, value in properties.items():
         if getattr(candidate_artifact, key) != value:
@@ -103,7 +109,7 @@ class ImporterDriver(base_driver.BaseDriver):
       if is_candidate:
         previous_artifacts.append(candidate_mlmd_artifact)
 
-    result = destination_channel.type()
+    result = output_artifact_class(mlmd_artifact_type)
     result.uri = uri
     for key, value in properties.items():
       setattr(result, key, value)
@@ -120,6 +126,23 @@ class ImporterDriver(base_driver.BaseDriver):
       result.set_mlmd_artifact(max(previous_artifacts, key=lambda m: m.id))
 
     return result
+
+  def generate_output_artifacts(
+      self, exec_properties: Dict[Text, Any],
+      output_artifact_class: Type[types.Artifact],
+      mlmd_artifact_type: Optional[metadata_store_pb2.ArtifactType] = None
+  ) -> Dict[Text, List[types.Artifact]]:
+    return {
+        IMPORT_RESULT_KEY: [
+            self._prepare_artifact(
+                uri=exec_properties[SOURCE_URI_KEY],
+                properties=exec_properties.get(PROPERTIES_KEY),
+                custom_properties=exec_properties.get(CUSTOM_PROPERTIES_KEY),
+                output_artifact_class=output_artifact_class,
+                mlmd_artifact_type=mlmd_artifact_type,
+                reimport=exec_properties[REIMPORT_OPTION_KEY])
+        ]
+    }
 
   def pre_execution(
       self,
@@ -139,16 +162,10 @@ class ImporterDriver(base_driver.BaseDriver):
         component_info=component_info,
         contexts=contexts)
     # Create imported artifacts.
-    output_artifacts = {
-        IMPORT_RESULT_KEY: [
-            self._prepare_artifact(
-                uri=exec_properties[SOURCE_URI_KEY],
-                properties=exec_properties[PROPERTIES_KEY],
-                custom_properties=exec_properties[CUSTOM_PROPERTIES_KEY],
-                destination_channel=output_dict[IMPORT_RESULT_KEY],
-                reimport=exec_properties[REIMPORT_OPTION_KEY])
-        ]
-    }
+    output_artifacts = self.generate_output_artifacts(
+        exec_properties,
+        output_artifact_class=output_dict[IMPORT_RESULT_KEY].type)
+
     # Update execution with imported artifacts.
     self._metadata_handler.update_execution(
         execution=execution,
