@@ -33,6 +33,8 @@ import tensorflow as tf
 import tensorflow_transform as tft
 
 from tfx.components.trainer.executor import TrainerFnArgs
+from tfx.components.trainer.fn_args_utils import DataAccessor
+from tfx_bsl.tfxio import dataset_options
 
 _FEATURE_KEYS = ['sepal_length', 'sepal_width', 'petal_length', 'petal_width']
 _LABEL_KEY = 'variety'
@@ -48,61 +50,42 @@ def _transformed_name(key):
   return key + '_xf'
 
 
-# TODO(b/153996019): This function will no longer be needed once feature is
-# added to return entire dataset in pyarrow format.
-def _tf_dataset_to_numpy(dataset: tf.data.Dataset,
-                         ) -> Tuple[np.ndarray, np.ndarray]:
-  """Converts a tf.data.dataset into features and labels.
-
-  Args:
-    dataset: A tf.data.dataset that contains (features, indices) tuple where
-      features is a dictionary of Tensors, and indices is a single Tensor of
-      label indices.
-
-  Returns:
-    A (features, indices) tuple where features is a matrix of features, and
-      indices is a single vector of label indices.
-  """
-  feature_list = []
-  label_list = []
-  for feature_dict, labels in dataset:
-    features = [feature_dict[_transformed_name(key)].numpy()
-                for key in _FEATURE_KEYS]
-    features = np.concatenate(features).T
-    feature_list.append(features)
-    label_list.append(labels)
-  return np.vstack(feature_list), np.concatenate(label_list)
-
-
-# TODO(b/157054136): Use TFXIO to read examples in the input function.
-def _input_fn(file_pattern: Text, tf_transform_output: tft.TFTransformOutput,
-              ) -> Tuple[np.ndarray, np.ndarray]:
+def _input_fn(
+    file_pattern: Text,
+    data_accessor: DataAccessor,
+    tf_transform_output: tft.TFTransformOutput,
+    batch_size: int = 20,
+) -> Tuple[np.ndarray, np.ndarray]:
   """Generates features and label for tuning/training.
 
   Args:
     file_pattern: input tfrecord file pattern.
+    data_accessor: DataAccessor for converting input to RecordBatch.
     tf_transform_output: A TFTransformOutput.
+    batch_size: An int representing the number of records to combine in a single
+      batch.
 
   Returns:
     A (features, indices) tuple where features is a matrix of features, and
       indices is a single vector of label indices.
   """
-  def _parse_example(example):
-    """Parses a tfrecord into a (features, indices) tuple of Tensors."""
-    parsed_example = tf.io.parse_single_example(
-        serialized=example,
-        features=tf_transform_output.transformed_feature_spec())
-    label = parsed_example.pop(_transformed_name(_LABEL_KEY))
-    return parsed_example, label
+  record_batch_iterator = data_accessor.record_batch_factory(
+      file_pattern,
+      dataset_options.RecordBatchesOptions(batch_size=batch_size, num_epochs=1),
+      tf_transform_output.transformed_metadata.schema)
 
-  filenames = tf.data.Dataset.list_files(file_pattern)
-  dataset = tf.data.TFRecordDataset(filenames, compression_type='GZIP')
-  # TODO(b/157598676): Make AUTOTUNE the default.
-  dataset = dataset.map(
-      _parse_example,
-      num_parallel_calls=tf.data.experimental.AUTOTUNE)
-  dataset = dataset.shuffle(_SHUFFLE_BUFFER)
-  return _tf_dataset_to_numpy(dataset)
+  feature_list = []
+  label_list = []
+  for record_batch in record_batch_iterator:
+    record_dict = {}
+    for record, schema in zip(record_batch, record_batch.schema):
+      record_dict[schema.name] = record.flatten()
+
+    label_list.append(record_dict[_transformed_name(_LABEL_KEY)])
+    features = [record_dict[_transformed_name(key)] for key in _FEATURE_KEYS]
+    feature_list.append(np.stack(features, axis=-1))
+
+  return np.concatenate(feature_list), np.concatenate(label_list)
 
 
 # TFX Transform will call this function.
@@ -135,8 +118,10 @@ def run_fn(fn_args: TrainerFnArgs):
   """
   tf_transform_output = tft.TFTransformOutput(fn_args.transform_output)
 
-  x_train, y_train = _input_fn(fn_args.train_files, tf_transform_output)
-  x_eval, y_eval = _input_fn(fn_args.eval_files, tf_transform_output)
+  x_train, y_train = _input_fn(fn_args.train_files, fn_args.data_accessor,
+                               tf_transform_output)
+  x_eval, y_eval = _input_fn(fn_args.eval_files, fn_args.data_accessor,
+                             tf_transform_output)
 
   steps_per_epoch = _TRAIN_DATA_SIZE / _TRAIN_BATCH_SIZE
 
